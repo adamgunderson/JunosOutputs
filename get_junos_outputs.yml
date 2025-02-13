@@ -1,0 +1,40 @@
+---
+- name: Retrieve output from Junos device and store locally
+  hosts: junos
+  gather_facts: no
+  connection: network_cli
+  vars:
+    # Define the list of commands and corresponding output filenames
+    command_list:
+      - { filename: "config_xml",         command: "show configuration | display xml | display inheritance | no-more" }
+      - { filename: "interfaces_xml",     command: "show interfaces | display xml | no-more" }
+      - { filename: "arp_xml",            command: "show arp | display xml | no-more" }
+      - { filename: "ipv6_neighbor_xml",  command: "show ipv6 neighbor | display xml | no-more" }
+      - { filename: "service_xml",        command: "show configuration groups junos-defaults applications | display xml | no-more" }
+      - { filename: "route_local",        command: "show route protocol local active-path all | display xml | no-more" }
+      - { filename: "route_direct",       command: "show route protocol direct active-path all | display xml | no-more" }
+      - { filename: "route_static",       command: "show route protocol static active-path all | display xml | no-more" }
+      - { filename: "route_ospf",         command: "show route protocol ospf active-path all | display xml | no-more" }
+      - { filename: "route_rip",          command: "show route protocol rip active-path all | display xml | no-more" }
+      - { filename: "route_bgp",          command: "show route protocol bgp active-path all | display xml | no-more" }
+      - { filename: "route_mpls",         command: "show route protocol mpls active-path all | display xml | no-more" }
+      - { filename: "route_evpn",         command: "show route protocol evpn active-path all | display xml | no-more" }
+
+  tasks:
+    - name: Execute each command on the Junos device
+      junipernetworks.junos.junos_command:
+        commands:
+          - "{{ item.command }}"
+      register: command_output
+      loop: "{{ command_list }}"
+      loop_control:
+        label: "{{ item.filename }}"
+
+    - name: Save command output to local files
+      delegate_to: localhost
+      ansible.builtin.copy:
+        dest: "./{{ item.item.filename }}"
+        content: "{{ item.stdout[0] }}"
+      loop: "{{ command_output.results }}"
+      loop_control:
+        label: "{{ item.item.filename }}"
