@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-# get_junos_outputs.py - Uses Paramiko to retrieve Junos outputs with a single password prompt
-# Logs command times and saves everything to /var/tmp/
+# get_junos_outputs.py - Standard Library version
+# Retrieves Junos outputs, logs command times, saves to /var/tmp/
+# No external dependencies required
 
 import os
 import sys
@@ -8,57 +9,11 @@ import getpass
 import time
 import tarfile
 import socket
+import subprocess
 from datetime import datetime
-
-# Better handling of Paramiko import
-PARAMIKO_AVAILABLE = False
-try:
-    import paramiko
-    PARAMIKO_AVAILABLE = True
-except ImportError:
-    # Try to find paramiko in site-packages for the current Python version
-    python_version = f"{sys.version_info.major}.{sys.version_info.minor}"
-    possible_paths = [
-        f"./venv/lib/python{python_version}/site-packages",
-        f"./venv/lib64/python{python_version}/site-packages",
-        f"~/.local/lib/python{python_version}/site-packages",
-        f"/usr/local/lib/python{python_version}/site-packages",
-        f"/usr/lib/python{python_version}/site-packages",
-    ]
-    
-    for path in possible_paths:
-        expanded_path = os.path.expanduser(path)
-        if os.path.exists(expanded_path) and expanded_path not in sys.path:
-            sys.path.append(expanded_path)
-    
-    # Try import again after adding paths
-    try:
-        import paramiko
-        PARAMIKO_AVAILABLE = True
-    except ImportError:
-        pass  # Will be handled by check_paramiko()
 
 # Default upload URL - can be overridden with command line argument
 DEFAULT_UPLOAD_URL = "https://supportfiles.firemon.com/s/rGWsNfq2NZ5RFMz"
-
-def check_paramiko():
-    """
-    Check if Paramiko is available and provide instructions if not.
-    """
-    if not PARAMIKO_AVAILABLE:
-        print("Paramiko SSH library is not installed. You need to install it to use this script.")
-        print("\nTo install Paramiko, run:")
-        print("  pip install paramiko")
-        print("\nIf pip is not available, you might need to install it first:")
-        print("  python -m ensurepip --upgrade")
-        print("  python -m pip install --upgrade pip")
-        print("\nIf you don't have permission to install system-wide, you can install it for your user only:")
-        print("  pip install --user paramiko")
-        print("\nOr create a virtual environment:")
-        print("  python -m venv venv")
-        print("  source venv/bin/activate  # On Windows, use: venv\\Scripts\\activate")
-        print("  pip install paramiko")
-        sys.exit(1)
 
 def setup_output_directory():
     """
@@ -81,15 +36,106 @@ def setup_output_directory():
         print(f"Using fallback directory: {fallback_dir}")
         return fallback_dir
 
-def run_commands_with_paramiko(hostname, port, username, password, commands, output_dir, log_file):
+def setup_ssh_control_master(hostname, port, username, log_file):
     """
-    Run commands on a remote Junos device using a single Paramiko SSH session.
+    Attempt to set up an SSH control master connection to avoid multiple password prompts.
+    
+    Returns:
+        tuple: (success, connection_command)
+    """
+    try:
+        # Create a control socket directory if it doesn't exist
+        socket_dir = os.path.expanduser("~/.ssh/cm")
+        os.makedirs(socket_dir, exist_ok=True)
+        
+        # Define the control socket path
+        control_path = f"{socket_dir}/junos-ssh-%h-%p-%r"
+        
+        # Build the connection command
+        connection_cmd = [
+            "ssh", 
+            "-o", "ControlMaster=auto",
+            "-o", "ControlPersist=60m",
+            "-o", "ControlPath=" + control_path,
+            "-o", "StrictHostKeyChecking=no",
+            "-p", str(port),
+            f"{username}@{hostname}",
+            "echo 'SSH Control Master connection established'"
+        ]
+        
+        # Attempt to establish the control connection
+        print("Attempting to establish SSH control connection...")
+        with open(log_file, 'a') as log:
+            log.write("Attempting to establish SSH control connection...\n")
+        
+        process = subprocess.run(
+            connection_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        
+        if process.returncode == 0:
+            success_msg = "SSH control connection established successfully. You should only need to enter your password once."
+            print(success_msg)
+            with open(log_file, 'a') as log:
+                log.write(f"{success_msg}\n")
+            
+            # Return the base command to use for future connections
+            ssh_cmd = [
+                "ssh",
+                "-o", "ControlPath=" + control_path,
+                "-o", "StrictHostKeyChecking=no",
+                "-p", str(port),
+                f"{username}@{hostname}"
+            ]
+            
+            return True, ssh_cmd
+        else:
+            failure_msg = "Failed to establish SSH control connection. You may be prompted for password multiple times."
+            print(failure_msg)
+            if process.stderr:
+                print(f"Error: {process.stderr}")
+            with open(log_file, 'a') as log:
+                log.write(f"{failure_msg}\n")
+                if process.stderr:
+                    log.write(f"Error: {process.stderr}\n")
+            
+            # Fall back to regular SSH command
+            ssh_cmd = [
+                "ssh",
+                "-o", "StrictHostKeyChecking=no",
+                "-p", str(port),
+                f"{username}@{hostname}"
+            ]
+            
+            return False, ssh_cmd
+    
+    except Exception as e:
+        error_msg = f"Error setting up SSH control connection: {e}"
+        print(error_msg)
+        with open(log_file, 'a') as log:
+            log.write(f"{error_msg}\n")
+        
+        # Fall back to regular SSH command
+        ssh_cmd = [
+            "ssh",
+            "-o", "StrictHostKeyChecking=no",
+            "-p", str(port),
+            f"{username}@{hostname}"
+        ]
+        
+        return False, ssh_cmd
+
+def run_commands(hostname, port, username, commands, output_dir, log_file):
+    """
+    Run commands on a remote Junos device.
+    Attempts to use SSH control master to minimize password prompts.
     
     Args:
         hostname: The hostname or IP of the remote device
         port: SSH port (usually 22)
         username: Username for SSH authentication
-        password: Password for SSH authentication
         commands: Dictionary mapping filenames to commands
         output_dir: Directory to store command outputs
         log_file: Path to the log file
@@ -100,116 +146,129 @@ def run_commands_with_paramiko(hostname, port, username, password, commands, out
     execution_times = {}
     successful = 0
     
-    # Log connection attempt
-    connection_message = f"Establishing SSH connection to {hostname}:{port} as {username}..."
-    print(connection_message)
-    with open(log_file, 'a') as log:
-        log.write(f"{connection_message}\n")
+    # First, try to set up an SSH control master connection
+    control_success, ssh_base_cmd = setup_ssh_control_master(hostname, port, username, log_file)
     
-    # Create SSH client
-    try:
-        client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        client.connect(hostname, port=int(port), username=username, password=password)
-        
-        connection_success = f"SSH connection established successfully."
-        print(connection_success)
+    # Check if we're in CLI or shell mode
+    print("Detecting Junos environment...")
+    with open(log_file, 'a') as log:
+        log.write("Detecting Junos environment...\n")
+    
+    test_cmd = ssh_base_cmd + ["echo $SHELL"]
+    result = subprocess.run(test_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    
+    # If we get a valid shell path, we're in shell mode and need to use 'cli' command
+    in_shell_mode = False
+    if result.returncode == 0 and ('/' in result.stdout or '\\' in result.stdout):
+        print("Detected shell environment. Using 'cli' command to execute Junos commands.")
         with open(log_file, 'a') as log:
-            log.write(f"{connection_success}\n\n")
+            log.write("Detected shell environment. Using 'cli' command to execute Junos commands.\n")
+        in_shell_mode = True
+    else:
+        print("Detected Junos CLI environment. Executing commands directly.")
+        with open(log_file, 'a') as log:
+            log.write("Detected Junos CLI environment. Executing commands directly.\n")
+    
+    # Execute each command
+    for filename, command in commands.items():
+        start_time = time.time()
+        log_message = f"Started executing command for {filename} at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        print(f"\n{log_message}")
         
-        # Execute each command
-        for filename, command in commands.items():
-            start_time = time.time()
-            log_message = f"Started executing command for {filename} at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-            print(f"\n{log_message}")
+        with open(log_file, 'a') as log:
+            log.write(f"\n{log_message}\n")
+            log.write(f"Command: {command}\n")
+        
+        # Modify command for shell mode if needed
+        if in_shell_mode:
+            # Escape quotes in the command
+            escaped_command = command.replace('"', '\\"')
+            exec_command = f'cli -c "{escaped_command}"'
+        else:
+            exec_command = command
+        
+        # Build the full command to execute
+        cmd = ssh_base_cmd + [exec_command]
+        
+        # Execute the command
+        try:
+            print(f"Executing: {exec_command}")
+            process = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
             
-            with open(log_file, 'a') as log:
-                log.write(f"\n{log_message}\n")
-                log.write(f"Command: {command}\n")
+            end_time = time.time()
+            execution_time = end_time - start_time
             
-            # Execute the command
-            try:
-                print(f"Executing: {command}")
-                stdin, stdout, stderr = client.exec_command(command)
+            output_path = os.path.join(output_dir, filename)
+            
+            if process.returncode != 0:
+                error_message = f"Command for {filename} failed with exit code {process.returncode}"
+                if process.stderr:
+                    error_message += f"\nError: {process.stderr}"
                 
-                # Read output
-                output = stdout.read().decode()
-                error = stderr.read().decode()
-                exit_code = stdout.channel.recv_exit_status()
-                
-                end_time = time.time()
-                execution_time = end_time - start_time
-                
-                output_path = os.path.join(output_dir, filename)
-                
-                if exit_code != 0:
-                    error_message = f"Command for {filename} returned non-zero exit code: {exit_code}"
-                    if error:
-                        error_message += f"\nError: {error}"
-                    
-                    print(error_message)
-                    with open(log_file, 'a') as log:
-                        log.write(f"{error_message}\n")
-                        log.write(f"Execution time: {execution_time:.2f} seconds (FAILED)\n")
-                    
-                    # Still save the stderr output
-                    with open(f"{output_path}.err", 'w') as f:
-                        f.write(error)
-                    
-                    # Save stdout too if there's any
-                    if output:
-                        with open(output_path, 'w') as f:
-                            f.write(output)
-                    
-                    execution_times[filename] = (execution_time, False)
-                else:
-                    # Write the output to the specified file
-                    with open(output_path, 'w') as f:
-                        f.write(output)
-                    
-                    # Also save stderr if there's any content
-                    if error:
-                        with open(f"{output_path}.err", 'w') as f:
-                            f.write(error)
-                    
-                    success_message = f"Output saved to file: {output_path}"
-                    timing_message = f"Execution time for {filename}: {execution_time:.2f} seconds"
-                    
-                    print(success_message)
-                    print(timing_message)
-                    
-                    with open(log_file, 'a') as log:
-                        log.write(f"{success_message}\n")
-                        log.write(f"{timing_message}\n")
-                    
-                    execution_times[filename] = (execution_time, True)
-                    successful += 1
-                
-            except Exception as e:
-                end_time = time.time()
-                execution_time = end_time - start_time
-                
-                error_message = f"An error occurred while executing command for {filename}: {e}"
                 print(error_message)
-                
                 with open(log_file, 'a') as log:
                     log.write(f"{error_message}\n")
-                    log.write(f"Execution time: {execution_time:.2f} seconds (ERROR)\n")
+                    log.write(f"Execution time: {execution_time:.2f} seconds (FAILED)\n")
+                
+                # Save stderr to error file
+                with open(f"{output_path}.err", 'w') as f:
+                    f.write(process.stderr)
+                
+                # Save stdout too if there's any
+                if process.stdout:
+                    with open(output_path, 'w') as f:
+                        f.write(process.stdout)
                 
                 execution_times[filename] = (execution_time, False)
-        
-        # Close SSH connection
-        client.close()
-        close_message = "SSH connection closed."
-        print(close_message)
-        with open(log_file, 'a') as log:
-            log.write(f"{close_message}\n")
-        
-    except Exception as e:
-        error_message = f"Error establishing SSH connection: {e}"
-        print(error_message)
-        with open(log_file, 'a') as log:
-            log.write(f"{error_message}\n")
+            else:
+                # Write the output to the specified file
+                with open(output_path, 'w') as f:
+                    f.write(process.stdout)
+                
+                # Also save stderr if there's any content
+                if process.stderr:
+                    with open(f"{output_path}.err", 'w') as f:
+                        f.write(process.stderr)
+                
+                success_message = f"Output saved to file: {output_path}"
+                timing_message = f"Execution time for {filename}: {execution_time:.2f} seconds"
+                
+                print(success_message)
+                print(timing_message)
+                
+                with open(log_file, 'a') as log:
+                    log.write(f"{success_message}\n")
+                    log.write(f"{timing_message}\n")
+                
+                execution_times[filename] = (execution_time, True)
+                successful += 1
+                
+        except Exception as e:
+            end_time = time.time()
+            execution_time = end_time - start_time
+            
+            error_message = f"An error occurred while executing command for {filename}: {e}"
+            print(error_message)
+            
+            with open(log_file, 'a') as log:
+                log.write(f"{error_message}\n")
+                log.write(f"Execution time: {execution_time:.2f} seconds (ERROR)\n")
+            
+            execution_times[filename] = (execution_time, False)
+    
+    # Clean up SSH control master if it was established
+    if control_success:
+        cleanup_cmd = ssh_base_cmd[:-1] + ["-O", "exit", hostname]
+        try:
+            subprocess.run(cleanup_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            print("SSH control connection closed.")
+        except:
+            pass
     
     # Print summary
     print(f"\nCompleted {successful} of {len(commands)} commands successfully.")
@@ -267,8 +326,6 @@ def upload_with_curl(archive_path, upload_url, log_file, insecure=False):
     """
     Upload the compressed archive to the specified Nextcloud URL using curl.
     """
-    import subprocess  # Import here to avoid issues if this function isn't used
-    
     try:
         # Extract cloud URL and folder token from the upload URL
         # Remove /s/token from the end of the URL to get the base URL
@@ -400,9 +457,6 @@ def parse_arguments():
     return args
 
 def main():
-    # Check if Paramiko is available
-    check_paramiko()
-    
     # Parse command line arguments
     args = parse_arguments()
     
@@ -425,9 +479,8 @@ def main():
     hostname = input("Enter device hostname or IP: ")
     port = input("Enter SSH port [22]: ") or "22"
     username = input("Enter username: ")
-    password = getpass.getpass("Enter password: ")
     
-    # Display connection info (except password)
+    # Display connection info
     print(f"\nConnecting to {hostname}:{port} as {username}...")
     with open(log_file, 'a') as log:
         log.write(f"Device: {hostname}:{port}\n")
@@ -453,9 +506,9 @@ def main():
         "route_bgp.l3vpn0 extensive": "show route table bgp.l3vpn0 extensive"
     }
     
-    # Execute commands with Paramiko
+    # Execute commands
     start_total = time.time()
-    execution_times = run_commands_with_paramiko(hostname, port, username, password, commands, output_dir, log_file)
+    execution_times = run_commands(hostname, port, username, commands, output_dir, log_file)
     end_total = time.time()
     total_time = end_total - start_total
     
