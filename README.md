@@ -1,109 +1,163 @@
-# Junos Output Retrieval Tools
+# Junos Output Retrieval Tool
 
-This repository contains two tools for retrieving configuration and command outputs from a Junos device:
+A Python script for collecting XML outputs from Junos devices with execution time logging. The script saves all outputs to a timestamped directory in `/var/tmp/` and can optionally upload the results to a Nextcloud server.
 
-1. **Python Script (`get_junos_outputs.py`)**  
-   Uses Paramiko to SSH into a device, execute commands, and save the output to local files.
+## Features
 
-2. **Ansible Playbook (`get_junos_outputs.yml`)**  
-   Uses Ansible (with the Junos collection) to connect via SSH (`network_cli`), run commands on the device, and save the output to local files.
+- Retrieves multiple command outputs from Junos devices in XML format
+- Uses a single SSH connection with one password prompt via Paramiko
+- Logs execution time for each command
+- Organizes outputs in a timestamped directory in `/var/tmp/`
+- Compresses all outputs into a tar.gz archive
+- Uploads results to a Nextcloud server (optional)
+- Comprehensive logging of all operations
 
-Both tools will save the output files (e.g., `config_xml`, `interfaces_xml`, etc.) on the workstation where the script or playbook is executed.
+## Requirements
 
----
+- Python 3.x (tested with Python 3.12)
+- Paramiko SSH library
+- Curl (for upload functionality)
 
-## Python Script: `get_junos_outputs.py`
+## Installation
 
-### Prerequisites
+1. Clone or download this repository
 
-- **Python 3** installed.
-- **Paramiko** library installed.
+2. Set up a virtual environment (recommended):
 
-### Setting Up a Virtual Environment (Recommended)
+```bash
+# Create a virtual environment
+python3.12 -m venv venv
 
-1. **Create a Virtual Environment:**
-   ```bash
-   python3 -m venv venv
-   ```
-   *(On Windows, you can use `python -m venv venv`.)*
+# Activate the virtual environment
+# On Linux/macOS:
+source venv/bin/activate
+# On Windows:
+# venv\Scripts\activate
 
-2. **Activate the Virtual Environment:**
-   - **Linux/Mac:**
-     ```bash
-     source venv/bin/activate
-     ```
-   - **Windows:**
-     ```bash
-     venv\Scripts\activate
-     ```
-
-3. **Install Dependencies:**
-   ```bash
-   pip install paramiko
-   ```
-
-### Configuration
-
-- Open `get_junos_outputs.py` in your favorite text editor.
-- Update the `device` dictionary with your device's connection details:
-  - `hostname`
-  - `port`
-  - `username`
-  - `password`
-
-### Running the Script
-
-1. **Ensure the virtual environment is activated.**
-2. **Run the script:**
-   ```bash
-   python get_junos_outputs.py
-   ```
-3. The script will:
-   - Connect to the device via SSH.
-   - Execute each command.
-   - Save each command's output to a file with a name matching the corresponding key (e.g., `config_xml`, `interfaces_xml`, etc.) on your local machine.
-
----
-
-## Ansible Playbook: `get_junos_outputs.yml`
-
-### Prerequisites
-
-- **Ansible** installed.
-- **Juniper Networks Junos Ansible Collection** installed.  
-  Install the collection using:
-  ```bash
-  ansible-galaxy collection install junipernetworks.junos
-  ```
-- A proper inventory file set up with device details.
-
-### Inventory Setup
-
-Create an inventory file (e.g., `hosts.ini`) with your device information. For example:
-
-```ini
-[junos]
-your_device_ip_or_hostname ansible_network_os=junos ansible_user=your_username ansible_password=your_password
+# Your terminal prompt should now show (venv) at the beginning
 ```
 
-### Running the Playbook
+3. Install the required Paramiko library:
 
-1. **Run the playbook with your inventory file:**
-   ```bash
-   ansible-playbook -i hosts.ini get_junos_outputs.yml
-   ```
-2. The playbook will:
-   - Connect to the Junos device using the `network_cli` connection.
-   - Execute each command defined in the playbook.
-   - Save the command outputs to files (e.g., `config_xml`, `interfaces_xml`, etc.) on your local workstation in the directory from which you run the playbook.
+```bash
+# Inside the activated virtual environment
+pip install paramiko
+```
 
----
+4. When you're done using the script, you can deactivate the virtual environment:
 
-## Additional Notes
+```bash
+deactivate
+```
 
-- **Output Files:** Both tools save the command outputs locally on the workstation running the tool.
-- **Customization:** Feel free to modify command strings, filenames, or connection details as needed.
-- **Documentation:**
-  - [Paramiko Documentation](https://docs.paramiko.org/)
-  - [Ansible Documentation](https://docs.ansible.com/)
-  - [Juniper Networks Junos Ansible Collection](https://galaxy.ansible.com/junipernetworks/junos)
+### Alternative Installation Methods
+
+If you prefer not to use a virtual environment, you can install Paramiko directly:
+
+```bash
+python3.12 -m pip install paramiko
+```
+
+If you don't have permission to install system-wide, you can install for your user only:
+
+```bash
+python3.12 -m pip install --user paramiko
+```
+
+## Usage
+
+### Using with a Virtual Environment
+
+If you installed with a virtual environment (recommended), make sure the environment is activated before running the script:
+
+```bash
+# Activate the virtual environment if not already activated
+source venv/bin/activate  # On Linux/macOS
+# venv\Scripts\activate   # On Windows
+
+# Then run the script
+python get_junos_outputs.py
+```
+
+### Basic Usage
+
+```bash
+python3.12 get_junos_outputs.py
+```
+
+With options:
+
+```bash
+python3.12 get_junos_outputs.py [options]
+```
+
+### Command Line Options
+
+```
+-u, --upload-url URL  Specify Nextcloud upload URL
+-k, --insecure        Use insecure mode for HTTPS connections
+-q, --quiet           Be quiet (minimal output)
+-p, --password        Use password from SUPPORT_FILES_PASSWORD environment variable
+-h, --help            Show this help message and exit
+```
+
+### Example
+
+To retrieve outputs and upload to a custom Nextcloud URL with insecure SSL:
+
+```bash
+python3.12 get_junos_outputs.py -u https://yourserver.com/s/yourtoken -k
+```
+
+## Output Structure
+
+The script creates a directory in `/var/tmp/` with the following naming convention:
+
+```
+/var/tmp/junos_outputs_[hostname]_YYYYMMDD_HHMMSS/
+```
+
+This directory contains:
+- Command outputs in XML format
+- Error files (if any)
+- Execution log with timing information
+- Archive created in the same location with .tar.gz extension
+
+## Collected Command Outputs
+
+The script collects the following information from Junos devices:
+
+- Configuration (XML format)
+- Interfaces information
+- ARP table
+- IPv6 neighbor table
+- Default service definitions
+- Routing tables (multiple protocols)
+- And more...
+
+## Troubleshooting
+
+### Paramiko Not Installed
+
+If you get an error about Paramiko not being installed, follow the installation instructions in the error message:
+
+```bash
+python3.12 -m pip install --user paramiko
+```
+
+### Connection Issues
+
+- Verify device hostname/IP is correct
+- Check that SSH port is correct (default is 22)
+- Verify username and password are correct
+- Ensure device is reachable from your system
+
+### Upload Failures
+
+- Check your Nextcloud URL
+- Verify that curl is installed
+- For SSL certificate issues, try using the `-k` flag
+
+## License
+
+This script is provided as-is for use with Juniper devices. Feel free to modify as needed.
