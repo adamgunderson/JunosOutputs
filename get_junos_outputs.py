@@ -56,19 +56,24 @@ def batch_run_commands(hostname, username, password, commands, output_dir, log_f
         f.write("#!/bin/bash\n")
         f.write("# Temporary script for batch command execution\n\n")
         
+        # Set up output directory variable in the script
+        f.write("OUTPUT_DIR=\"./outputs\"\n")
+        f.write("mkdir -p \"$OUTPUT_DIR\"\n")
+        f.write("touch \"$OUTPUT_DIR/execution_times.txt\"\n\n")
+        
         for filename, command in commands.items():
             # Escape single quotes in the command
             escaped_command = command.replace("'", "'\\''")
             # Write command that will save output to a file
             f.write(f"echo 'Executing command for {filename}...'\n")
             f.write(f"start_time=$(date +%s)\n")
-            f.write(f"echo '$ {command}'\n")
-            f.write(f"{escaped_command} > '{output_dir}/{filename}'\n")
+            f.write(f"echo '$ {escaped_command}'\n")
+            f.write(f"{escaped_command} > \"$OUTPUT_DIR/{filename}\" 2> \"$OUTPUT_DIR/{filename}.err\"\n")
             f.write(f"exit_code=$?\n")
             f.write(f"end_time=$(date +%s)\n")
             f.write(f"execution_time=$((end_time - start_time))\n")
-            f.write(f"echo '{filename} completed in {execution_time} seconds (exit code: {exit_code})'\n")
-            f.write(f"echo '{filename}:{execution_time}:{exit_code}' >> '{output_dir}/execution_times.txt'\n")
+            f.write(f"echo '{filename} completed in $execution_time seconds (exit code: $exit_code)'\n")
+            f.write(f"echo '{filename}:$execution_time:$exit_code' >> \"$OUTPUT_DIR/execution_times.txt\"\n")
             f.write("\n")
     
     # Make the script executable
@@ -99,6 +104,12 @@ def batch_run_commands(hostname, username, password, commands, output_dir, log_f
     with open(log_file, 'a') as log:
         log.write(f"Executing commands in batch mode...\n")
     
+    # First, create the output directory on the remote host
+    remote_output_dir = f"{remote_dir}/outputs"
+    mkdir_output_cmd = f"ssh -o StrictHostKeyChecking=no {username}@{hostname} \"mkdir -p {remote_output_dir}\""
+    subprocess.run(mkdir_output_cmd, shell=True, check=False)
+    
+    # Then execute the commands
     ssh_cmd = f"ssh -o StrictHostKeyChecking=no {username}@{hostname} \"cd {remote_dir} && ./batch_commands.sh\""
     
     start_total = time.time()
@@ -121,27 +132,36 @@ def batch_run_commands(hostname, username, password, commands, output_dir, log_f
     execution_times = {}
     try:
         # Download the execution times file
-        download_cmd = f"scp -o StrictHostKeyChecking=no {username}@{hostname}:{remote_dir}/execution_times.txt {output_dir}/execution_times.txt"
+        download_cmd = f"scp -o StrictHostKeyChecking=no {username}@{hostname}:{remote_dir}/outputs/execution_times.txt {output_dir}/execution_times.txt"
         subprocess.run(download_cmd, shell=True, check=False)
         
-        # Read execution times
-        with open(f"{output_dir}/execution_times.txt", 'r') as f:
-            for line in f:
-                parts = line.strip().split(':')
-                if len(parts) >= 3:
-                    filename, exec_time, exit_code = parts[0], parts[1], parts[2]
-                    execution_times[filename] = (int(exec_time), int(exit_code) == 0)
+        # Read execution times if file exists
+        if os.path.exists(f"{output_dir}/execution_times.txt"):
+            with open(f"{output_dir}/execution_times.txt", 'r') as f:
+                for line in f:
+                    parts = line.strip().split(':')
+                    if len(parts) >= 3:
+                        filename, exec_time, exit_code = parts[0], parts[1], parts[2]
+                        execution_times[filename] = (float(exec_time), exit_code == "0")
     except Exception as e:
         print(f"Failed to process execution times: {e}")
         with open(log_file, 'a') as log:
             log.write(f"Failed to process execution times: {e}\n")
     
     # Download all output files
+    print("Downloading output files...")
     total_files = 0
     successful_files = 0
+    
     for filename in commands.keys():
-        download_cmd = f"scp -o StrictHostKeyChecking=no {username}@{hostname}:{remote_dir}/{filename} {output_dir}/{filename}"
+        # Download the output file
+        download_cmd = f"scp -o StrictHostKeyChecking=no {username}@{hostname}:{remote_dir}/outputs/{filename} {output_dir}/{filename}"
         download_result = subprocess.run(download_cmd, shell=True, check=False)
+        
+        # Also download the error file if it exists
+        err_download_cmd = f"scp -o StrictHostKeyChecking=no {username}@{hostname}:{remote_dir}/outputs/{filename}.err {output_dir}/{filename}.err"
+        subprocess.run(err_download_cmd, shell=True, check=False)
+        
         total_files += 1
         if download_result.returncode == 0 and os.path.exists(f"{output_dir}/{filename}"):
             successful_files += 1
