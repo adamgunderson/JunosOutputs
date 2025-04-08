@@ -503,7 +503,7 @@ def main():
         "route_evpn": "show route protocol evpn active-path all | display xml | no-more",
         "route_bgp_all": "show route table ?",
         "route_bgp.l3vpn0": "show route table bgp.l3vpn0",
-        "route_bgp.l3vpn0 extensive": "show route table bgp.l3vpn0 extensive"
+        "route_bgp.l3vpn0_extensive": "show route table bgp.l3vpn0 extensive"
     }
     
     # Execute commands
