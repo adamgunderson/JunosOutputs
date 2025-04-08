@@ -1,138 +1,137 @@
-# Junos Output Collection Tools
+# Junos Output Collection Tool
 
-This repository contains tools for collecting and exporting output from Juniper Networks devices (Junos OS). These scripts help network engineers gather diagnostic information quickly and efficiently.
-
-## Contents
-
-- [Overview](#overview)
-- [Scripts](#scripts)
-  - [Python Script](#python-script)
-  - [Ansible Playbook](#ansible-playbook)
-- [Installation](#installation)
-- [Usage](#usage)
-  - [Using the Python Script](#using-the-python-script)
-  - [Using the Ansible Playbook](#using-the-ansible-playbook)
-- [Collected Data](#collected-data)
-- [File Upload](#file-upload)
-- [Troubleshooting](#troubleshooting)
+A Python-based utility for collecting diagnostic information from Juniper Networks devices.
 
 ## Overview
 
-These scripts automate the collection of operational and configuration data from Junos devices. This is particularly useful for:
+`get_junos_outputs.py` is a standalone Python script that collects operational and configuration data from Junos devices. It requires no external dependencies (uses only the Python standard library), making it suitable for environments where installing packages is restricted.
 
-- Troubleshooting network issues
-- Gathering data for support cases
-- Auditing network configuration
-- Documenting network state
+## Features
 
-## Scripts
+- **No Dependencies**: Uses only Python standard library modules
+- **SSH Control Master**: Minimizes password prompts during command execution
+- **Command Timing**: Logs execution time for each command
+- **Output Organization**: Creates a timestamped directory in `/var/tmp/` to store outputs
+- **Automatic Compression**: Compresses collected data into a tar.gz archive
+- **Cloud Upload**: Uploads the archive to a Nextcloud server for easy sharing
 
-### Python Script
-
-`get_junos_outputs.py` is a standalone Python script that:
-
-- Requires no external dependencies (uses only the Python standard library)
-- Connects to Junos devices via SSH
-- Executes multiple show commands and saves their outputs
-- Times command execution
-- Compresses the outputs into a tar.gz archive
-- Optionally uploads the archive to a Nextcloud server
-
-### Ansible Playbook
-
-`get_junos_outputs.yml` is an Ansible playbook that:
-
-- Uses the Juniper.junos collection
-- Executes multiple show commands in XML format
-- Saves command outputs to local files
-- Works with existing Ansible inventory
-
-## Installation
-
-### Python Script Requirements
+## Requirements
 
 - Python 3.6+
 - SSH access to Junos devices
+- Write access to `/var/tmp/` (falls back to current directory if unavailable)
 
-### Ansible Playbook Requirements
+## Installation
 
-- Ansible 2.9+
-- Juniper.junos collection
-- SSH access to Junos devices
-
-To install the required Ansible collection:
-
-```bash
-ansible-galaxy collection install junipernetworks.junos
-```
-
-## Usage
-
-### Using the Python Script
-
-1. Make the script executable:
+No installation required. Simply download the script and make it executable:
 
 ```bash
 chmod +x get_junos_outputs.py
 ```
 
-2. Run the script:
+## Usage
+
+### Basic Usage
+
+Run the script and follow the prompts:
 
 ```bash
 ./get_junos_outputs.py
 ```
 
-3. Enter the device hostname/IP, SSH port, and username when prompted
+You will be prompted to enter:
+- Device hostname or IP address
+- SSH port (defaults to 22)
+- Username for SSH authentication
 
-#### Command-line Options
+### Command-line Options
 
 ```
 Usage: python get_junos_outputs.py [options]
 Options:
   -u, --upload-url URL  Specify Nextcloud upload URL
+                        (default: https://supportfiles.firemon.com/s/rGWsNfq2NZ5RFMz)
   -k, --insecure        Use insecure mode for HTTPS connections
   -q, --quiet           Be quiet (minimal output)
   -p, --password        Use password from SUPPORT_FILES_PASSWORD environment variable
   -h, --help            Show this help message and exit
 ```
 
-### Using the Ansible Playbook
+### Examples
 
-1. Ensure your Ansible inventory includes Junos devices in a group called `junos`
-
-2. Run the playbook:
-
+Upload to a custom URL:
 ```bash
-ansible-playbook get_junos_outputs.yml
+./get_junos_outputs.py --upload-url https://mycloud.example.com/s/mytoken
+```
+
+Skip SSL verification for upload:
+```bash
+./get_junos_outputs.py --insecure
+```
+
+Run with minimal output:
+```bash
+./get_junos_outputs.py --quiet
 ```
 
 ## Collected Data
 
-Both scripts collect similar data, including:
+The script collects the following information from Junos devices:
 
-- Device configuration (XML format)
+- Device configuration (XML format with inheritance)
 - Interface information
-- ARP/IPv6 neighbor tables
-- Routing tables (from various protocols)
-- Service definitions
+- ARP and IPv6 neighbor tables
+- Default application configurations
+- Routing tables for various protocols:
+  - Local routes
+  - Direct routes
+  - Static routes
+  - OSPF routes
+  - RIP routes
+  - BGP routes (with extensive information)
+  - MPLS routes
+  - EVPN routes
+  - L3VPN routes
 
-The Python script collects a few additional outputs beyond what the Ansible playbook captures.
+## Output Files
+
+The script creates:
+
+1. A timestamped directory in `/var/tmp/` (format: `/var/tmp/junos_outputs_HOSTNAME_YYYYMMDD_HHMMSS/`)
+2. Individual output files for each command
+3. An execution log (`execution_log.txt`)
+4. A compressed archive of all outputs (`.tar.gz`)
 
 ## File Upload
 
-The Python script can upload the compressed outputs to a Nextcloud server:
+The script can upload the compressed outputs to a Nextcloud server:
 
 - Default upload URL: `https://supportfiles.firemon.com/s/rGWsNfq2NZ5RFMz`
-- You can specify a different URL using the `-u` option
-- Use `-k` if SSL certificate verification should be disabled
-- Set the `SUPPORT_FILES_PASSWORD` environment variable if authentication is required
+- Upload uses `curl` command with the WebDAV protocol
+- Authentication uses the share token (extracted from the URL)
+- Set the `SUPPORT_FILES_PASSWORD` environment variable if a password is required
 
 ## Troubleshooting
 
-- **SSH Issues**: Ensure you have SSH access to the target devices
-- **Permission Errors**: The Python script needs write access to `/var/tmp/` (falls back to current directory if unavailable)
+- **SSH Connection Issues**: Ensure you have SSH access to the target device
+- **Permission Errors**: The script needs write access to `/var/tmp/`
 - **Upload Failures**: Check network connectivity to the upload server
-- **Ansible Errors**: Ensure the Juniper.junos collection is installed and your inventory is correctly configured
+- **Command Errors**: Review the execution log for specific command failures
+
+## Output Directory Structure
+
+```
+/var/tmp/junos_outputs_HOSTNAME_YYYYMMDD_HHMMSS/
+├── config_xml
+├── interfaces_xml
+├── arp_xml
+├── ipv6_neighbor_xml
+├── service_xml
+├── route_local
+├── route_direct
+├── ... (other route files)
+└── execution_log.txt
+```
 
 ---
 
