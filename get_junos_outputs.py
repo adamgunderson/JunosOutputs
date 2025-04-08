@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# get_junos_outputs.py - Modified version with command timing logging,
-# outputs saved to /var/tmp/, and automatic upload to Nextcloud
+# get_junos_outputs.py - Retrieves Junos output, logs command execution time,
+# saves to /var/tmp/ and uploads results without requiring external modules
 
 import subprocess
 import os
@@ -8,46 +8,7 @@ import sys
 import getpass
 import time
 import tarfile
-import tempfile
 from datetime import datetime
-
-def ensure_module(module_name):
-    """Dynamically import a module by searching for it in potential site-packages locations"""
-    # First try the normal import in case it's already in the path
-    try:
-        return __import__(module_name)
-    except ImportError:
-        pass
-    
-    # Get the current Python version
-    py_version = f"{sys.version_info.major}.{sys.version_info.minor}"
-    
-    # Create a list of potential paths to check
-    base_path = '/usr/lib/firemon/devpackfw/lib'
-    potential_paths = [
-        # Current Python version
-        f"{base_path}/python{py_version}/site-packages",
-        # Exact Python version with patch
-        f"{base_path}/python{sys.version.split()[0]}/site-packages",
-        # Try a range of nearby versions (for future-proofing)
-        *[f"{base_path}/python3.{i}/site-packages" for i in range(8, 20)]
-    ]
-    
-    # Try each path
-    for path in potential_paths:
-        if os.path.exists(path):
-            if path not in sys.path:
-                sys.path.append(path)
-            try:
-                return __import__(module_name)
-            except ImportError:
-                continue
-    
-    # If we get here, we couldn't find the module
-    raise ImportError(f"Could not find module {module_name} in any potential site-packages location")
-
-# Import required modules
-requests = ensure_module("requests")
 
 # Default upload URL - can be overridden with command line argument
 DEFAULT_UPLOAD_URL = "https://supportfiles.firemon.com/s/rGWsNfq2NZ5RFMz"
@@ -73,90 +34,200 @@ def setup_output_directory():
         print(f"Using fallback directory: {fallback_dir}")
         return fallback_dir
 
-def run_command(hostname, username, password, command, output_dir, filename, log_file):
+def batch_run_commands(hostname, username, password, commands, output_dir, log_file):
     """
-    Run a command on a remote Junos device using the ssh command-line tool.
-    Saves the output to the specified filename in the output directory.
-    Logs execution time to the log file.
-    """
-    start_time = time.time()
-    log_message = f"Started executing command for {filename} at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-    print(log_message)
+    Run multiple commands on a remote Junos device in a single SSH session.
+    This reduces the number of password prompts to just one.
     
+    Args:
+        hostname: The hostname or IP of the remote device
+        username: Username for SSH authentication
+        password: Password for SSH authentication
+        commands: Dictionary mapping filenames to commands
+        output_dir: Directory to store command outputs
+        log_file: Path to the log file
+    
+    Returns:
+        Dictionary with successful commands as keys and execution times as values
+    """
+    # Create a temporary script file containing all the commands
+    temp_script_path = os.path.join(output_dir, "batch_commands.sh")
+    with open(temp_script_path, 'w') as f:
+        f.write("#!/bin/bash\n")
+        f.write("# Temporary script for batch command execution\n\n")
+        
+        for filename, command in commands.items():
+            # Escape single quotes in the command
+            escaped_command = command.replace("'", "'\\''")
+            # Write command that will save output to a file
+            f.write(f"echo 'Executing command for {filename}...'\n")
+            f.write(f"start_time=$(date +%s)\n")
+            f.write(f"echo '$ {command}'\n")
+            f.write(f"{escaped_command} > '{output_dir}/{filename}'\n")
+            f.write(f"exit_code=$?\n")
+            f.write(f"end_time=$(date +%s)\n")
+            f.write(f"execution_time=$((end_time - start_time))\n")
+            f.write(f"echo '{filename} completed in {execution_time} seconds (exit code: {exit_code})'\n")
+            f.write(f"echo '{filename}:{execution_time}:{exit_code}' >> '{output_dir}/execution_times.txt'\n")
+            f.write("\n")
+    
+    # Make the script executable
+    os.chmod(temp_script_path, 0o755)
+    
+    # Upload the script to the Junos device
+    print(f"Uploading batch script to {hostname}...")
     with open(log_file, 'a') as log:
-        log.write(f"{log_message}\n")
-        log.write(f"Command: {command}\n")
+        log.write(f"Uploading batch script to {hostname}...\n")
     
-    # Use sshpass if available, otherwise the user might be prompted for password
-    try:
-        # Check if sshpass is available
-        subprocess.run(['which', 'sshpass'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-        ssh_command = [
-            'sshpass', '-p', password, 
-            'ssh', '-o', 'StrictHostKeyChecking=no', 
-            f'{username}@{hostname}', command
-        ]
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        print(f"sshpass not found. You may be prompted for a password.")
-        ssh_command = [
-            'ssh', '-o', 'StrictHostKeyChecking=no', 
-            f'{username}@{hostname}', command
-        ]
+    # Create a temporary directory on the remote host
+    remote_dir = f"/var/tmp/junos_batch_{int(time.time())}"
+    mkdir_cmd = f"ssh -o StrictHostKeyChecking=no {username}@{hostname} \"mkdir -p {remote_dir}\""
+    subprocess.run(mkdir_cmd, shell=True, check=False)
     
+    # Upload the script
+    upload_cmd = f"scp -o StrictHostKeyChecking=no {temp_script_path} {username}@{hostname}:{remote_dir}/batch_commands.sh"
+    scp_result = subprocess.run(upload_cmd, shell=True, check=False)
+    
+    if scp_result.returncode != 0:
+        print("Failed to upload batch script. Falling back to individual commands.")
+        with open(log_file, 'a') as log:
+            log.write("Failed to upload batch script. Falling back to individual commands.\n")
+        return run_commands_individually(hostname, username, password, commands, output_dir, log_file)
+    
+    # Execute the script on the remote host
+    print(f"Executing commands in batch mode...")
+    with open(log_file, 'a') as log:
+        log.write(f"Executing commands in batch mode...\n")
+    
+    ssh_cmd = f"ssh -o StrictHostKeyChecking=no {username}@{hostname} \"cd {remote_dir} && ./batch_commands.sh\""
+    
+    start_total = time.time()
+    ssh_result = subprocess.run(ssh_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    end_total = time.time()
+    
+    # Log the output
+    with open(log_file, 'a') as log:
+        log.write("Batch execution output:\n")
+        log.write(ssh_result.stdout + "\n")
+        if ssh_result.stderr:
+            log.write("Errors:\n")
+            log.write(ssh_result.stderr + "\n")
+    
+    # Clean up the remote directory
+    cleanup_cmd = f"ssh -o StrictHostKeyChecking=no {username}@{hostname} \"rm -rf {remote_dir}\""
+    subprocess.run(cleanup_cmd, shell=True, check=False)
+    
+    # Process execution times from the output
+    execution_times = {}
     try:
-        print(f"Executing command for {filename}:")
-        print(f"  {command}")
+        # Download the execution times file
+        download_cmd = f"scp -o StrictHostKeyChecking=no {username}@{hostname}:{remote_dir}/execution_times.txt {output_dir}/execution_times.txt"
+        subprocess.run(download_cmd, shell=True, check=False)
         
-        # Run the SSH command and capture the output
-        result = subprocess.run(
-            ssh_command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            check=False  # Don't raise an exception on non-zero exit code
-        )
+        # Read execution times
+        with open(f"{output_dir}/execution_times.txt", 'r') as f:
+            for line in f:
+                parts = line.strip().split(':')
+                if len(parts) >= 3:
+                    filename, exec_time, exit_code = parts[0], parts[1], parts[2]
+                    execution_times[filename] = (int(exec_time), int(exit_code) == 0)
+    except Exception as e:
+        print(f"Failed to process execution times: {e}")
+        with open(log_file, 'a') as log:
+            log.write(f"Failed to process execution times: {e}\n")
+    
+    # Download all output files
+    total_files = 0
+    successful_files = 0
+    for filename in commands.keys():
+        download_cmd = f"scp -o StrictHostKeyChecking=no {username}@{hostname}:{remote_dir}/{filename} {output_dir}/{filename}"
+        download_result = subprocess.run(download_cmd, shell=True, check=False)
+        total_files += 1
+        if download_result.returncode == 0 and os.path.exists(f"{output_dir}/{filename}"):
+            successful_files += 1
+    
+    # Log summary
+    total_time = end_total - start_total
+    summary = f"Batch execution completed in {total_time:.2f} seconds. Downloaded {successful_files} of {total_files} files."
+    print(summary)
+    with open(log_file, 'a') as log:
+        log.write(f"{summary}\n")
+    
+    return execution_times
+
+def run_commands_individually(hostname, username, password, commands, output_dir, log_file):
+    """
+    Fallback method to run commands individually if batch mode fails.
+    Each command will require password entry.
+    """
+    execution_times = {}
+    print("Running commands individually (you'll need to enter your password for each command)...")
+    
+    for filename, command in commands.items():
+        start_time = time.time()
+        log_message = f"Started executing command for {filename} at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        print(log_message)
         
-        end_time = time.time()
-        execution_time = end_time - start_time
+        with open(log_file, 'a') as log:
+            log.write(f"{log_message}\n")
+            log.write(f"Command: {command}\n")
         
-        output_path = os.path.join(output_dir, filename)
+        # Execute SSH command
+        ssh_cmd = f"ssh -o StrictHostKeyChecking=no {username}@{hostname} \"{command}\""
+        print(f"Executing: {command}")
         
-        if result.returncode != 0:
-            error_message = f"Error executing command for {filename}: {result.stderr}"
+        try:
+            # Run the SSH command and capture the output
+            result = subprocess.run(
+                ssh_cmd,
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            
+            end_time = time.time()
+            execution_time = end_time - start_time
+            
+            output_path = os.path.join(output_dir, filename)
+            
+            if result.returncode != 0:
+                error_message = f"Error executing command for {filename}: {result.stderr}"
+                print(error_message)
+                with open(log_file, 'a') as log:
+                    log.write(f"{error_message}\n")
+                    log.write(f"Execution time: {execution_time:.2f} seconds (FAILED)\n\n")
+                execution_times[filename] = (execution_time, False)
+            else:
+                # Write the output to the specified file
+                with open(output_path, 'w') as f:
+                    f.write(result.stdout)
+                
+                success_message = f"Output saved to file: {output_path}"
+                timing_message = f"Execution time for {filename}: {execution_time:.2f} seconds"
+                
+                print(success_message)
+                print(timing_message)
+                
+                with open(log_file, 'a') as log:
+                    log.write(f"{success_message}\n")
+                    log.write(f"{timing_message}\n\n")
+                
+                execution_times[filename] = (execution_time, True)
+        except Exception as e:
+            end_time = time.time()
+            execution_time = end_time - start_time
+            
+            error_message = f"An error occurred while executing command for {filename}: {e}"
             print(error_message)
+            
             with open(log_file, 'a') as log:
                 log.write(f"{error_message}\n")
-                log.write(f"Execution time: {execution_time:.2f} seconds (FAILED)\n\n")
-            return False
-        
-        # Write the output to the specified file
-        with open(output_path, 'w') as f:
-            f.write(result.stdout)
-        
-        success_message = f"Output saved to file: {output_path}"
-        timing_message = f"Execution time for {filename}: {execution_time:.2f} seconds"
-        
-        print(success_message)
-        print(timing_message)
-        
-        with open(log_file, 'a') as log:
-            log.write(f"{success_message}\n")
-            log.write(f"{timing_message}\n\n")
-        
-        return True
-        
-    except Exception as e:
-        end_time = time.time()
-        execution_time = end_time - start_time
-        
-        error_message = f"An error occurred while executing command for {filename}: {e}"
-        print(error_message)
-        
-        with open(log_file, 'a') as log:
-            log.write(f"{error_message}\n")
-            log.write(f"Execution time: {execution_time:.2f} seconds (ERROR)\n\n")
-        
-        return False
+                log.write(f"Execution time: {execution_time:.2f} seconds (ERROR)\n\n")
+            
+            execution_times[filename] = (execution_time, False)
+    
+    return execution_times
 
 def compress_directory(directory_path, log_file):
     """
@@ -205,12 +276,9 @@ def compress_directory(directory_path, log_file):
         
         return None
 
-def upload_to_nextcloud(archive_path, upload_url, log_file, insecure=False):
+def upload_with_curl(archive_path, upload_url, log_file, insecure=False):
     """
-    Upload the compressed archive to the specified Nextcloud URL.
-    Similar to the bash script's upload functionality.
-    
-    Uses either the requests library or falls back to curl if requests is not available.
+    Upload the compressed archive to the specified Nextcloud URL using curl.
     """
     try:
         # Extract cloud URL and folder token from the upload URL
@@ -235,99 +303,6 @@ def upload_to_nextcloud(archive_path, upload_url, log_file, insecure=False):
         
         # Get password from environment variable if set
         password = os.environ.get('SUPPORT_FILES_PASSWORD', '')
-        
-        # Check if curl is available as a fallback
-        curl_available = False
-        try:
-            subprocess.run(['which', 'curl'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-            curl_available = True
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            pass
-        
-        # Try to use requests library first
-        try:
-            # Set up headers
-            headers = {
-                'X-Requested-With': 'XMLHttpRequest'
-            }
-            
-            # Read file data
-            with open(archive_path, 'rb') as file:
-                file_data = file.read()
-            
-            # Upload file using requests
-            verify = not insecure
-            response = requests.put(
-                endpoint,
-                data=file_data,
-                headers=headers,
-                auth=(folder_token, password),
-                verify=verify
-            )
-        
-            # Check response
-            if response.status_code in [200, 201, 204]:
-                success_message = f"Upload successful! Status code: {response.status_code}"
-                print(success_message)
-                
-                with open(log_file, 'a') as log:
-                    log.write(f"{success_message}\n")
-                
-                return True
-            else:
-                error_message = f"Upload failed. Status code: {response.status_code}"
-                print(error_message)
-                print(f"Response: {response.text}")
-                
-                with open(log_file, 'a') as log:
-                    log.write(f"{error_message}\n")
-                    log.write(f"Response: {response.text}\n")
-                
-                # If requests failed, try curl as a fallback if available
-                if curl_available:
-                    print("Attempting upload using curl as fallback...")
-                    return _upload_with_curl(archive_path, cloud_url, folder_token, password, insecure, log_file)
-                return False
-                
-        except Exception as e:
-            print(f"Error using requests library: {e}")
-            print("Attempting upload using curl as fallback...")
-            
-            with open(log_file, 'a') as log:
-                log.write(f"Error using requests library: {e}\n")
-                log.write("Attempting upload using curl as fallback...\n")
-            
-            # If requests failed, try curl as a fallback if available
-            if curl_available:
-                return _upload_with_curl(archive_path, cloud_url, folder_token, password, insecure, log_file)
-            
-            # If curl is not available either, return failure
-            error_message = "Both requests library and curl are unavailable. Upload failed."
-            print(error_message)
-            
-            with open(log_file, 'a') as log:
-                log.write(f"{error_message}\n")
-            
-            return False
-    except Exception as e:
-        error_message = f"Error uploading archive: {e}"
-        print(error_message)
-        
-        with open(log_file, 'a') as log:
-            log.write(f"{error_message}\n")
-        
-        return False
-
-def _upload_with_curl(archive_path, cloud_url, folder_token, password, insecure, log_file):
-    """
-    Helper function to upload the archive using curl command line tool as a fallback.
-    """
-    try:
-        # Get filename from archive path
-        filename = os.path.basename(archive_path)
-        
-        # Set up API endpoint
-        endpoint = f"{cloud_url}/public.php/webdav/{filename}"
         
         # Build curl command
         curl_cmd = ['curl']
@@ -397,32 +372,50 @@ def _upload_with_curl(archive_path, cloud_url, folder_token, password, insecure,
 
 def parse_arguments():
     """
-    Parse command line arguments.
-    Returns a dictionary of arguments.
+    Parse command line arguments using a simple approach that doesn't require argparse.
     """
-    try:
-        import argparse
-    except ImportError:
-        argparse = ensure_module("argparse")
+    args = {
+        'upload_url': DEFAULT_UPLOAD_URL,
+        'insecure': False,
+        'quiet': False,
+        'password': False
+    }
     
-    parser = argparse.ArgumentParser(description='Retrieve outputs from a Junos device and upload them to Nextcloud.')
-    parser.add_argument('-u', '--upload-url', default=DEFAULT_UPLOAD_URL,
-                      help='Nextcloud upload URL (default: %(default)s)')
-    parser.add_argument('-k', '--insecure', action='store_true',
-                      help='Use insecure mode for HTTPS connections')
-    parser.add_argument('-q', '--quiet', action='store_true',
-                      help='Be quiet (minimal output)')
-    parser.add_argument('-p', '--password', action='store_true',
-                      help='Use password from SUPPORT_FILES_PASSWORD environment variable')
+    i = 1
+    while i < len(sys.argv):
+        arg = sys.argv[i]
+        if arg in ['-u', '--upload-url'] and i + 1 < len(sys.argv):
+            args['upload_url'] = sys.argv[i + 1]
+            i += 2
+        elif arg in ['-k', '--insecure']:
+            args['insecure'] = True
+            i += 1
+        elif arg in ['-q', '--quiet']:
+            args['quiet'] = True
+            i += 1
+        elif arg in ['-p', '--password']:
+            args['password'] = True
+            i += 1
+        elif arg in ['-h', '--help']:
+            print("Usage: python get_junos_outputs.py [options]")
+            print("Options:")
+            print("  -u, --upload-url URL  Specify Nextcloud upload URL")
+            print("  -k, --insecure        Use insecure mode for HTTPS connections")
+            print("  -q, --quiet           Be quiet (minimal output)")
+            print("  -p, --password        Use password from SUPPORT_FILES_PASSWORD environment variable")
+            print("  -h, --help            Show this help message and exit")
+            sys.exit(0)
+        else:
+            i += 1
     
-    return parser.parse_args()
+    return args
 
 def main():
     # Parse command line arguments
     args = parse_arguments()
     
     # If quiet mode is enabled, redirect stdout to /dev/null
-    if args.quiet:
+    if args['quiet']:
         sys.stdout = open(os.devnull, 'w')
     
     # Set up the output directory
@@ -433,8 +426,8 @@ def main():
     with open(log_file, 'w') as log:
         log.write(f"Junos Output Retrieval Tool - Execution Log\n")
         log.write(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
-        log.write(f"Upload URL: {args.upload_url}\n")
-        log.write(f"Insecure mode: {'Yes' if args.insecure else 'No'}\n\n")
+        log.write(f"Upload URL: {args['upload_url']}\n")
+        log.write(f"Insecure mode: {'Yes' if args['insecure'] else 'No'}\n\n")
     
     # Get device connection details
     hostname = input("Enter device hostname or IP: ")
@@ -455,29 +448,27 @@ def main():
         "arp_xml": "show arp | display xml | no-more",
         "ipv6_neighbor_xml": "show ipv6 neighbor | display xml | no-more",
         "service_xml": "show configuration groups junos-defaults applications | display xml | no-more",
-        "route_local": "show route protocol local active-path all extensive | display xml | no-more",
-        "route_direct": "show route protocol direct active-path all extensive | display xml | no-more",
-        "route_static": "show route protocol static active-path all extensive | display xml | no-more",
-        "route_ospf": "show route protocol ospf active-path all extensive | display xml | no-more",
-        "route_rip": "show route protocol rip active-path all extensive | display xml | no-more",
+        "route_local": "show route protocol local active-path all | display xml | no-more",
+        "route_direct": "show route protocol direct active-path all | display xml | no-more",
+        "route_static": "show route protocol static active-path all | display xml | no-more",
+        "route_ospf": "show route protocol ospf active-path all | display xml | no-more",
+        "route_rip": "show route protocol rip active-path all | display xml | no-more",
         "route_bgp": "show route protocol bgp active-path all extensive | display xml | no-more",
-        "route_mpls": "show route protocol mpls active-path all extensive | display xml | no-more",
-        "route_evpn": "show route protocol evpn active-path all extensive | display xml | no-more",
+        "route_mpls": "show route protocol mpls active-path all | display xml | no-more",
+        "route_evpn": "show route protocol evpn active-path all | display xml | no-more",
         "route_bgp_all": "show route table ?",
         "route_bgp.l3vpn0": "show route table bgp.l3vpn0",
         "route_bgp.l3vpn0 extensive": "show route table bgp.l3vpn0 extensive"
     }
     
-    # Loop over each command, execute it, and write the output to a file
+    # Execute commands in batch mode
     start_total = time.time()
-    successful = 0
-    
-    for filename, command in commands.items():
-        if run_command(hostname, username, password, command, output_dir, filename, log_file):
-            successful += 1
-    
+    execution_times = batch_run_commands(hostname, username, password, commands, output_dir, log_file)
     end_total = time.time()
     total_time = end_total - start_total
+    
+    # Count successful commands
+    successful = sum(1 for _, (_, success) in execution_times.items() if success)
     
     completion_message = f"\nCompleted {successful} of {len(commands)} commands successfully."
     timing_message = f"Total execution time: {total_time:.2f} seconds"
@@ -494,8 +485,8 @@ def main():
     archive_path = compress_directory(output_dir, log_file)
     
     if archive_path:
-        # Upload the archive to Nextcloud
-        upload_success = upload_to_nextcloud(archive_path, args.upload_url, log_file, args.insecure)
+        # Upload the archive to Nextcloud using curl
+        upload_success = upload_with_curl(archive_path, args['upload_url'], log_file, args['insecure'])
         
         with open(log_file, 'a') as log:
             log.write(f"Upload successful: {'Yes' if upload_success else 'No'}\n")
@@ -503,9 +494,9 @@ def main():
         
         # Display final message
         if upload_success:
-            print(f"\nArchive uploaded successfully to {args.upload_url}")
+            print(f"\nArchive uploaded successfully to {args['upload_url']}")
         else:
-            print(f"\nFailed to upload archive to {args.upload_url}")
+            print(f"\nFailed to upload archive to {args['upload_url']}")
     else:
         print("\nFailed to create archive. Upload skipped.")
         
