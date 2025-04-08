@@ -10,12 +10,33 @@ import tarfile
 import socket
 from datetime import datetime
 
-# Handle Paramiko import - we'll check if it's installed and provide instructions if not
+# Better handling of Paramiko import
+PARAMIKO_AVAILABLE = False
 try:
     import paramiko
     PARAMIKO_AVAILABLE = True
 except ImportError:
-    PARAMIKO_AVAILABLE = False
+    # Try to find paramiko in site-packages for the current Python version
+    python_version = f"{sys.version_info.major}.{sys.version_info.minor}"
+    possible_paths = [
+        f"./venv/lib/python{python_version}/site-packages",
+        f"./venv/lib64/python{python_version}/site-packages",
+        f"~/.local/lib/python{python_version}/site-packages",
+        f"/usr/local/lib/python{python_version}/site-packages",
+        f"/usr/lib/python{python_version}/site-packages",
+    ]
+    
+    for path in possible_paths:
+        expanded_path = os.path.expanduser(path)
+        if os.path.exists(expanded_path) and expanded_path not in sys.path:
+            sys.path.append(expanded_path)
+    
+    # Try import again after adding paths
+    try:
+        import paramiko
+        PARAMIKO_AVAILABLE = True
+    except ImportError:
+        pass  # Will be handled by check_paramiko()
 
 # Default upload URL - can be overridden with command line argument
 DEFAULT_UPLOAD_URL = "https://supportfiles.firemon.com/s/rGWsNfq2NZ5RFMz"
