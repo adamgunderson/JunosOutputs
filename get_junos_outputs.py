@@ -78,9 +78,12 @@ def main():
         "route_static": "show route protocol static active-path all | display xml | no-more",
         "route_ospf": "show route protocol ospf active-path all | display xml | no-more",
         "route_rip": "show route protocol rip active-path all | display xml | no-more",
-        "route_bgp": "show route protocol bgp active-path all | display xml | no-more",
+        "route_bgp": "show route protocol bgp active-path all extensive | display xml | no-more",
         "route_mpls": "show route protocol mpls active-path all | display xml | no-more",
-        "route_evpn": "show route protocol evpn active-path all | display xml | no-more"
+        "route_evpn": "show route protocol evpn active-path all | display xml | no-more",
+        "route_bgp_all": "show route table ?",
+        "route_bgp.l3vpn0": "show route table bgp.l3vpn0",
+        "route_bgp.l3vpn0 extensive": "show route table bgp.l3vpn0 extensive"
     }
     
     # Loop over each command, execute it, and write the output to a file
