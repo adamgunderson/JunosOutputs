@@ -10,10 +10,79 @@ import time
 import tarfile
 import socket
 import subprocess
+import urllib.request
 from datetime import datetime
 
 # Default upload URL - can be overridden with command line argument
 DEFAULT_UPLOAD_URL = "https://supportfiles.firemon.com/s/rGWsNfq2NZ5RFMz"
+DEFAULT_UPDATE_URL = "https://raw.githubusercontent.com/adamgunderson/JunosOutputs/refs/heads/main/get_junos_outputs.py"
+
+def check_for_updates(script_url, log_file=None):
+    """
+    Check for and apply updates from the provided URL.
+    Returns True if an update was applied, False otherwise.
+    """
+    try:
+        print("Checking for updates...")
+        if log_file:
+            with open(log_file, 'a') as log:
+                log.write(f"Checking for updates from: {script_url}\n")
+        
+        # Get the current script path
+        current_script = os.path.abspath(sys.argv[0])
+        
+        # Download the latest version
+        print(f"Downloading latest version from {script_url}")
+        response = urllib.request.urlopen(script_url)
+        latest_code = response.read().decode('utf-8')
+        
+        # Read the current version
+        with open(current_script, 'r') as f:
+            current_code = f.read()
+        
+        # Compare versions
+        if latest_code != current_code:
+            print("Update available! Applying...")
+            if log_file:
+                with open(log_file, 'a') as log:
+                    log.write("Update available! Applying...\n")
+            
+            # Create a backup of the current script
+            backup_file = f"{current_script}.bak"
+            with open(backup_file, 'w') as f:
+                f.write(current_code)
+            print(f"Backup created at {backup_file}")
+            
+            # Write the new version
+            with open(current_script, 'w') as f:
+                f.write(latest_code)
+            
+            print("Update applied successfully. Restarting script...")
+            if log_file:
+                with open(log_file, 'a') as log:
+                    log.write(f"Update applied successfully. Backup at: {backup_file}\n")
+                    log.write("Restarting script...\n")
+            
+            # Restart the script
+            os.execv(sys.executable, ['python'] + sys.argv)
+            
+            # We won't reach here, but for clarity:
+            return True
+        else:
+            print("No updates available. Running current version.")
+            if log_file:
+                with open(log_file, 'a') as log:
+                    log.write("No updates available. Running current version.\n")
+            return False
+    except Exception as e:
+        error_message = f"Error checking for updates: {e}"
+        print(error_message)
+        print("Continuing with current version...")
+        if log_file:
+            with open(log_file, 'a') as log:
+                log.write(f"{error_message}\n")
+                log.write("Continuing with current version...\n")
+        return False
 
 def setup_output_directory():
     """
@@ -424,7 +493,9 @@ def parse_arguments():
         'upload_url': DEFAULT_UPLOAD_URL,
         'insecure': False,
         'quiet': False,
-        'password': False
+        'password': False,
+        'auto_update': False,
+        'update_url': DEFAULT_UPDATE_URL
     }
     
     i = 1
@@ -442,6 +513,12 @@ def parse_arguments():
         elif arg in ['-p', '--password']:
             args['password'] = True
             i += 1
+        elif arg in ['--auto-update']:
+            args['auto_update'] = True
+            i += 1
+        elif arg in ['--update-url'] and i + 1 < len(sys.argv):
+            args['update_url'] = sys.argv[i + 1]
+            i += 2
         elif arg in ['-h', '--help']:
             print("Usage: python get_junos_outputs.py [options]")
             print("Options:")
@@ -449,6 +526,8 @@ def parse_arguments():
             print("  -k, --insecure        Use insecure mode for HTTPS connections")
             print("  -q, --quiet           Be quiet (minimal output)")
             print("  -p, --password        Use password from SUPPORT_FILES_PASSWORD environment variable")
+            print("  --auto-update         Automatically check for and apply updates")
+            print("  --update-url URL      Specify the URL to check for updates")
             print("  -h, --help            Show this help message and exit")
             sys.exit(0)
         else:
@@ -460,10 +539,6 @@ def main():
     # Parse command line arguments
     args = parse_arguments()
     
-    # If quiet mode is enabled, redirect stdout to /dev/null
-    if args['quiet']:
-        sys.stdout = open(os.devnull, 'w')
-    
     # Set up the output directory
     output_dir = setup_output_directory()
     
@@ -474,6 +549,21 @@ def main():
         log.write(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
         log.write(f"Upload URL: {args['upload_url']}\n")
         log.write(f"Insecure mode: {'Yes' if args['insecure'] else 'No'}\n\n")
+        if args['auto_update']:
+            log.write(f"Auto-update: Enabled\n")
+            log.write(f"Update URL: {args['update_url']}\n\n")
+    
+    # Check for updates if auto-update is enabled
+    if args['auto_update']:
+        updated = check_for_updates(args['update_url'], log_file)
+        if updated:
+            # If an update was applied, the script would have restarted
+            # So we won't reach here
+            return
+    
+    # If quiet mode is enabled, redirect stdout to /dev/null
+    if args['quiet']:
+        sys.stdout = open(os.devnull, 'w')
     
     # Get device connection details
     hostname = input("Enter device hostname or IP: ")
