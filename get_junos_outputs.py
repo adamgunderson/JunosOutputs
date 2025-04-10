@@ -488,21 +488,21 @@ def main():
     
     # Mapping of output filenames to the commands
     commands = {
-        "config_xml": "show configuration | display xml | display inheritance | no-more",
-        "interfaces_xml": "show interfaces | display xml | no-more",
-        "arp_xml": "show arp | display xml | no-more",
-        "ipv6_neighbor_xml": "show ipv6 neighbor | display xml | no-more",
-        "service_xml": "show configuration groups junos-defaults applications | display xml | no-more",
-        "route_local": "show route protocol local active-path all | display xml | no-more",
-        "route_direct": "show route protocol direct active-path all | display xml | no-more",
-        "route_static": "show route protocol static active-path all | display xml | no-more",
-        "route_ospf": "show route protocol ospf active-path all | display xml | no-more",
-        "route_rip": "show route protocol rip active-path all | display xml | no-more",
-        "route_bgp": "show route protocol bgp active-path all extensive | display xml | no-more",
-        "route_mpls": "show route protocol mpls active-path all | display xml | no-more",
-        "route_evpn": "show route protocol evpn active-path all | display xml | no-more",
-        "route_bgp.l3vpn0": "show route table bgp.l3vpn0",
-        "route_bgp.l3vpn0_extensive": "show route table bgp.l3vpn0 extensive"
+        # "config_xml": "show configuration | display xml | display inheritance | no-more",
+        # "interfaces_xml": "show interfaces | display xml | no-more",
+        # "arp_xml": "show arp | display xml | no-more",
+        # "ipv6_neighbor_xml": "show ipv6 neighbor | display xml | no-more",
+        # "service_xml": "show configuration groups junos-defaults applications | display xml | no-more",
+        # "route_local": "show route protocol local active-path all | display xml | no-more",
+        # "route_direct": "show route protocol direct active-path all | display xml | no-more",
+        # "route_static": "show route protocol static active-path all | display xml | no-more",
+        # "route_ospf": "show route protocol ospf active-path all | display xml | no-more",
+        # "route_rip": "show route protocol rip active-path all | display xml | no-more",
+        # "route_bgp": "show route protocol bgp active-path all extensive | display xml | no-more",
+        # "route_mpls": "show route protocol mpls active-path all | display xml | no-more",
+        # "route_evpn": "show route protocol evpn active-path all | display xml | no-more",
+        "route_bgp.l3vpn0": "show route table bgp.l3vpn.0",
+        "route_bgp.l3vpn0_extensive": "show route table bgp.l3vpn.0 extensive"
     }
     
     # Execute commands
