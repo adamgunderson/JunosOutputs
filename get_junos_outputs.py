@@ -17,10 +17,17 @@ from datetime import datetime
 DEFAULT_UPLOAD_URL = "https://supportfiles.firemon.com/s/rGWsNfq2NZ5RFMz"
 DEFAULT_UPDATE_URL = "https://raw.githubusercontent.com/adamgunderson/JunosOutputs/refs/heads/main/get_junos_outputs.py"
 
-def check_for_updates(script_url, log_file=None):
+def check_for_updates(script_url, log_file=None, create_backup=False):
     """
     Check for and apply updates from the provided URL.
-    Returns True if an update was applied, False otherwise.
+    
+    Args:
+        script_url: URL to download the updated script from
+        log_file: Path to log file to write messages to
+        create_backup: Whether to create a backup before updating (default: False)
+        
+    Returns:
+        True if an update was applied, False otherwise.
     """
     try:
         print("Checking for updates...")
@@ -47,11 +54,20 @@ def check_for_updates(script_url, log_file=None):
                 with open(log_file, 'a') as log:
                     log.write("Update available! Applying...\n")
             
-            # Create a backup of the current script
-            backup_file = f"{current_script}.bak"
-            with open(backup_file, 'w') as f:
-                f.write(current_code)
-            print(f"Backup created at {backup_file}")
+            # Create a backup of the current script if requested
+            if create_backup:
+                backup_file = f"{current_script}.bak"
+                with open(backup_file, 'w') as f:
+                    f.write(current_code)
+                print(f"Backup created at {backup_file}")
+                if log_file:
+                    with open(log_file, 'a') as log:
+                        log.write(f"Backup created at: {backup_file}\n")
+            else:
+                print("Skipping backup creation (default behavior)")
+                if log_file:
+                    with open(log_file, 'a') as log:
+                        log.write("Skipping backup creation (default behavior)\n")
             
             # Write the new version
             with open(current_script, 'w') as f:
@@ -60,7 +76,7 @@ def check_for_updates(script_url, log_file=None):
             print("Update applied successfully. Restarting script...")
             if log_file:
                 with open(log_file, 'a') as log:
-                    log.write(f"Update applied successfully. Backup at: {backup_file}\n")
+                    log.write("Update applied successfully.\n")
                     log.write("Restarting script...\n")
             
             # Restart the script
@@ -495,7 +511,8 @@ def parse_arguments():
         'quiet': False,
         'password': False,
         'auto_update': False,
-        'update_url': DEFAULT_UPDATE_URL
+        'update_url': DEFAULT_UPDATE_URL,
+        'create_backup': False  # Default to NOT creating backups
     }
     
     i = 1
@@ -519,6 +536,9 @@ def parse_arguments():
         elif arg in ['--update-url'] and i + 1 < len(sys.argv):
             args['update_url'] = sys.argv[i + 1]
             i += 2
+        elif arg in ['--with-backup']:  # Changed from --no-backup to --with-backup
+            args['create_backup'] = True  # Now this enables backups instead of disabling them
+            i += 1
         elif arg in ['-h', '--help']:
             print("Usage: python get_junos_outputs.py [options]")
             print("Options:")
@@ -528,6 +548,7 @@ def parse_arguments():
             print("  -p, --password        Use password from SUPPORT_FILES_PASSWORD environment variable")
             print("  --auto-update         Automatically check for and apply updates")
             print("  --update-url URL      Specify the URL to check for updates")
+            print("  --with-backup         Create backup files when updating (not the default)")
             print("  -h, --help            Show this help message and exit")
             sys.exit(0)
         else:
@@ -551,11 +572,12 @@ def main():
         log.write(f"Insecure mode: {'Yes' if args['insecure'] else 'No'}\n\n")
         if args['auto_update']:
             log.write(f"Auto-update: Enabled\n")
-            log.write(f"Update URL: {args['update_url']}\n\n")
+            log.write(f"Update URL: {args['update_url']}\n")
+            log.write(f"Create backup: {'Yes' if args['create_backup'] else 'No'}\n\n")
     
     # Check for updates if auto-update is enabled
     if args['auto_update']:
-        updated = check_for_updates(args['update_url'], log_file)
+        updated = check_for_updates(args['update_url'], log_file, args['create_backup'])
         if updated:
             # If an update was applied, the script would have restarted
             # So we won't reach here
