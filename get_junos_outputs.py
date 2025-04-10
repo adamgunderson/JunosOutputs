@@ -592,7 +592,8 @@ def main():
         # "route_mpls": "show route protocol mpls active-path all | display xml | no-more",
         # "route_evpn": "show route protocol evpn active-path all | display xml | no-more",
         "route_bgp.l3vpn0": "show route table bgp.l3vpn.0",
-        "route_bgp.l3vpn0_extensive": "show route table bgp.l3vpn.0 extensive"
+        "route_bgp.l3vpn0_extensive": "show route table bgp.l3vpn.0 extensive",
+        "route_bgp.l3vpn-inet6_extensive": "show route table bgp.l3vpn-inet6.0 extensive | display xml | no-more"
     }
     
     # Execute commands
