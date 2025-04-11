@@ -2,6 +2,7 @@
 # get_junos_outputs.py - Standard Library version
 # Retrieves Junos outputs, logs command times, saves to /var/tmp/
 # No external dependencies required
+# Auto-Updates from GitHub
 
 import os
 import sys
